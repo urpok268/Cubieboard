@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Live ASR (Vosk) — Cubieboard2 raw-optimized:
-- RawInputStream (байты int16)
-- крупные буферы (0.20s)
-- минимум работ в callback
-- VAD и любое "шумоподавление" отключены
+Live ASR (Vosk) — Cubieboard2 raw-optimized + авто частота:
+- Автоопределение поддерживаемой частоты устройства (исправляет paerror -9997)
+- Запись в int16 при частоте устройства (48k/44.1k/...)
+- Онлайн-ресемплинг в 16 кГц для Vosk (линейная интерполяция)
+- RawInputStream (байты int16), крупные буферы, минимум работ в callback
+- VAD отключен
 """
 
 import os
@@ -21,19 +22,11 @@ from collections import deque
 import numpy as np
 import sounddevice as sd
 
-# ===================== ПАРАМЕТРЫ =====================
-RATE = 16000
-CHANNELS = 1
-
-CHUNK_DURATION = 3.0      # строго 3 секунды
-OVERLAP        = 0.5      # небольшое перекрытие
-
-# Для ARM: крупнее буфер, чтобы не было overflow (0.20s = 3200 фреймов)
-BLOCKSIZE = int(RATE * 0.20)
-
-# Энерго-VAD (ОТКЛЮЧЕНО)
-VAD_ENERGY_THRESHOLD = 0.0
-VAD_MIN_SPEECH_RATIO = 0.0
+# ===================== ПАРАМЕТРЫ (логические) =====================
+VOSK_RATE = 16000          # Vosk ждёт 16 кГц
+CHANNELS  = 1
+CHUNK_DURATION = 3.0       # 3 секунды окна
+OVERLAP        = 0.5
 
 # Очередь/вывод
 PROC_QUEUE_MAX = 2
@@ -46,15 +39,6 @@ MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "../models/vosk-model-small-ru-0.22")
 _mic_cnt = 0
 
 # ===================== УТИЛИТЫ =====================
-def energy_vad_mask_int16(x: np.ndarray, thr: float):
-    thr_i16 = int(32767 * thr)
-    return np.abs(x.astype(np.int32)) > thr_i16
-
-def is_speech_int16(x: np.ndarray) -> bool:
-    if x.size == 0:
-        return False
-    return np.mean(energy_vad_mask_int16(x, VAD_ENERGY_THRESHOLD)) >= VAD_MIN_SPEECH_RATIO
-
 def similar(a: str, b: str) -> bool:
     if not a or not b:
         return False
@@ -109,6 +93,25 @@ def squash_repeats(text: str, max_word_repeat: int = 3, max_phrase_repeat: int =
     words = collapse_phrase(words, 3, max_phrase_repeat)
     return " ".join(words)
 
+# ----------- простой ресемплер (линейная интерполяция) -----------
+def resample_int16_linear(x_i16: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Линейный ресемплер int16 -> int16 без внешних зависимостей.
+       Для речи работает нормально. Если src_rate == dst_rate — вернёт исходный массив."""
+    if src_rate == dst_rate or x_i16.size == 0:
+        return x_i16
+    x = x_i16.astype(np.float32) / 32767.0
+    src_len = x.shape[0]
+    dst_len = int(round(src_len * (dst_rate / float(src_rate))))
+    if dst_len <= 0:
+        return np.zeros(0, dtype=np.int16)
+    # координаты исходной и целевой осей времени
+    src_idx = np.linspace(0.0, src_len - 1.0, num=src_len, dtype=np.float32)
+    dst_idx = np.linspace(0.0, src_len - 1.0, num=dst_len, dtype=np.float32)
+    y = np.interp(dst_idx, src_idx, x).astype(np.float32)
+    # обратно в int16 с клипом
+    np.clip(y, -1.0, 1.0, out=y)
+    return (y * 32767.0).astype(np.int16)
+
 # ===================== АУДИО БУФЕР (deque, int16) =====================
 class Int16Ring:
     def __init__(self, rate: int, max_seconds: int = 10):
@@ -158,7 +161,6 @@ class Int16Ring:
                     remain -= blk.size
                     self.blocks.popleft()
                 else:
-                    # отрезаем слева
                     self.blocks[0] = blk[remain:].copy()
                     self.total -= remain
                     remain = 0
@@ -179,10 +181,8 @@ class Int16Ring:
 def audio_callback(indata_bytes, frames, t, status):
     """RawInputStream: indata — bytes. Делаем минимум работы и печати."""
     if status:
-        # overflow/underflow и т.д.
         print(f"[audio] {status}", file=sys.stderr)
 
-    # Превращаем байты в int16 (копию) и сразу в буфер
     mono = np.frombuffer(indata_bytes, dtype=np.int16).copy()
 
     # Если устройство внезапно стерео — схлопнем в моно без лишних копий
@@ -192,7 +192,7 @@ def audio_callback(indata_bytes, frames, t, status):
     global audio_buffer, _mic_cnt
     audio_buffer.add(mono)
 
-    _mic_cnt = (_mic_cnt + 1) % 50   # редкая печать
+    _mic_cnt = (_mic_cnt + 1) % 50
     if _mic_cnt == 0:
         print(f"[mic] ok ({frames} frames)")
 
@@ -211,15 +211,18 @@ class LatestQueue:
     def get(self, timeout=None):
         return self.q.get(timeout=timeout)
 
-def monitor_buffer(audio_buffer: Int16Ring, processing_queue: "LatestQueue"):
-    chunk_samples = int(CHUNK_DURATION * RATE)
+def monitor_buffer(audio_buffer: Int16Ring, processing_queue: "LatestQueue",
+                   capture_rate: int):
+    """Достаём чанки в частоте устройства и при необходимости ресемплим их в 16 кГц."""
+    chunk_samples = int(CHUNK_DURATION * capture_rate)
     while True:
         audio_buffer.wait_for(chunk_samples)
-        chunk = audio_buffer.pop_chunk(CHUNK_DURATION, OVERLAP)
-        # VAD отключен: отправляем каждый чанк как есть
-        if chunk is not None:
-            # print(f"[proc] чанк ~{len(chunk)/RATE:.2f}s -> обработка")
-            processing_queue.put_latest((chunk, time.perf_counter()))
+        chunk = audio_buffer.pop_chunk(CHUNK_DURATION, OVERLAP)  # int16 @ capture_rate
+        if chunk is None:
+            continue
+        if capture_rate != VOSK_RATE:
+            chunk = resample_int16_linear(chunk, capture_rate, VOSK_RATE)  # int16 @ 16k
+        processing_queue.put_latest((chunk, time.perf_counter()))
 
 # ===================== БЭКЕНД ASR: Vosk =====================
 EMA_ALPHA = 0.3
@@ -248,15 +251,12 @@ class VoskWrapper:
 
     def __call__(self, inputs):
         from vosk import KaldiRecognizer
-        pcm16 = inputs["array"]  # np.int16 (моно)
+        pcm16 = inputs["array"]  # np.int16 (моно @ 16кГц)
         if pcm16.dtype != np.int16:
             pcm16 = np.clip(pcm16, -32768, 32767).astype(np.int16, copy=False)
         raw = pcm16.tobytes()
 
         rec = KaldiRecognizer(self._model, self.rate)
-        # Чуть экономим CPU — можно не включать слова:
-        # try: rec.SetWords(True); except: pass
-
         try:
             rec.AcceptWaveform(raw)
             out = rec.FinalResult()
@@ -272,8 +272,8 @@ class VoskWrapper:
         return {"text": text}
 
 def load_asr():
-    print("ASR backend: Vosk")
-    return VoskWrapper(MODEL_PATH, RATE)
+    print("ASR backend: Vosk (16 kHz)")
+    return VoskWrapper(MODEL_PATH, VOSK_RATE)
 
 def asr_worker(proc_q: LatestQueue, asr):
     global ema_proc_time
@@ -288,13 +288,13 @@ def asr_worker(proc_q: LatestQueue, asr):
             continue
 
         if isinstance(audio_item, tuple):
-            audio_chunk, t_ready = audio_item
+            audio_chunk, t_ready = audio_item  # int16 @ 16k
         else:
             audio_chunk, t_ready = audio_item, time.perf_counter()
 
         try:
             t0 = time.perf_counter()
-            result = asr({"array": audio_chunk, "sampling_rate": RATE})
+            result = asr({"array": audio_chunk, "sampling_rate": VOSK_RATE})
             t1 = time.perf_counter()
 
             text = (result.get("text") or "").strip()
@@ -334,7 +334,9 @@ def list_devices():
     devices = sd.query_devices()
     for i, dev in enumerate(devices):
         if dev.get("max_input_channels", 0) > 0:
-            print(f"{i}: {dev['name']}")
+            dsr = dev.get("default_samplerate", None)
+            dsr_str = f" @{int(dsr)}Hz" if dsr else ""
+            print(f"{i}: {dev['name']}{dsr_str}")
 
 def choose_device():
     list_devices()
@@ -345,15 +347,52 @@ def choose_device():
         print("Некорректный ввод, использую устройство по умолчанию.")
         return None
 
+def pick_working_samplerate(device) -> int:
+    """Подбираем частоту, которую устройство точно примет, чтобы избежать -9997."""
+    # 1) пробуем default_samplerate устройства
+    try:
+        info = sd.query_devices(device)
+        dsr = int(info.get("default_samplerate", 0)) or None
+    except Exception:
+        dsr = None
+
+    tried = []
+    def _ok(rate):
+        try:
+            sd.check_input_settings(device=device, samplerate=rate, channels=CHANNELS, dtype="int16")
+            return True
+        except Exception:
+            return False
+
+    if dsr and _ok(dsr):
+        return dsr
+
+    # 2) перебор популярных частот
+    candidates = [16000, 48000, 44100, 32000, 22050, 8000]
+    for r in candidates:
+        if r not in tried and _ok(r):
+            return r
+
+    # 3) последний шанс — спросим у PortAudio глобальный default
+    try:
+        r = int(sd.query_devices(None, kind='input')["default_samplerate"])
+        if _ok(r):
+            return r
+    except Exception:
+        pass
+
+    # 4) fallback
+    return 16000
+
 # ===================== MAIN =====================
 def main():
-    # ARM: чуть понижаем приоритет процесса печати
+    # ARM: понижаем приоритет печати (необязательно)
     try:
         os.nice(10)
     except Exception:
         pass
 
-    # Попробуем выбрать ALSA hostapi (если есть), чтобы обойти PulseAudio
+    # Пробуем выбрать ALSA hostapi
     try:
         alsa_idx = next(i for i, a in enumerate(sd.query_hostapis()) if 'alsa' in a['name'].lower())
         sd.default.hostapi = alsa_idx
@@ -362,31 +401,36 @@ def main():
 
     device = choose_device()
 
-    # Проверка входных настроек
+    # Подбираем рабочую частоту устройства
+    CAPTURE_RATE = pick_working_samplerate(device)
+    print(f"[audio] Используемая частота устройства: {CAPTURE_RATE} Гц (Vosk всегда 16000 Гц)")
+
+    # Проверка входных настроек с найденной частотой
     try:
-        sd.check_input_settings(device=device, samplerate=RATE,
-                                channels=CHANNELS, dtype="int16")
+        sd.check_input_settings(device=device, samplerate=CAPTURE_RATE, channels=CHANNELS, dtype="int16")
     except Exception as e:
-        print(f"[audio] Настройки недопустимы: {e}", file=sys.stderr)
+        print(f"[audio] Настройки недопустимы даже после подбора частоты: {e}", file=sys.stderr)
         return
 
+    # BLOCKSIZE ~0.20s на частоте устройства
+    BLOCKSIZE = int(CAPTURE_RATE * 0.20)
+
     global audio_buffer
-    audio_buffer = Int16Ring(RATE)
+    audio_buffer = Int16Ring(CAPTURE_RATE)
 
     proc_q = LatestQueue(maxsize=PROC_QUEUE_MAX)
     asr = load_asr()
 
     threading.Thread(target=asr_worker, args=(proc_q, asr), daemon=True).start()
-    threading.Thread(target=monitor_buffer, args=(audio_buffer, proc_q), daemon=True).start()
+    threading.Thread(target=monitor_buffer, args=(audio_buffer, proc_q, CAPTURE_RATE), daemon=True).start()
 
     print("\nНачало записи... Нажмите Ctrl+C для остановки")
     try:
         with sd.RawInputStream(
-            samplerate=RATE,
+            samplerate=CAPTURE_RATE,   # <— частота устройства (чтобы не было -9997)
             channels=CHANNELS,
             dtype="int16",
             blocksize=BLOCKSIZE,
-            # latency: оставим None -> бэкенд выберет сам; можно 'high' если нужно
             latency=None,
             callback=audio_callback,
             device=device
