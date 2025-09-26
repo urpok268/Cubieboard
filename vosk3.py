@@ -180,8 +180,8 @@ class Int16Ring:
 # ===================== ПОТОКИ =====================
 def audio_callback(indata_bytes, frames, t, status):
     """RawInputStream: indata — bytes. Делаем минимум работы и печати."""
-    if status:
-        print(f"[audio] {status}", file=sys.stderr)
+    #if status:
+        #print(f"[audio] {status}", file=sys.stderr)
 
     mono = np.frombuffer(indata_bytes, dtype=np.int16).copy()
 
@@ -193,8 +193,8 @@ def audio_callback(indata_bytes, frames, t, status):
     audio_buffer.add(mono)
 
     _mic_cnt = (_mic_cnt + 1) % 50
-    if _mic_cnt == 0:
-        print(f"[mic] ok ({frames} frames)")
+    #if _mic_cnt == 0:
+        #print(f"[mic] ok ({frames} frames)")
 
 class LatestQueue:
     def __init__(self, maxsize=1):
