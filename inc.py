@@ -9,7 +9,7 @@ import numpy as np
 import soundfile as sf
 
 # ===== Настройки =====
-INPUT_FILE  = "test3.wav"       # исходный файл
+INPUT_FILE  = "test4.wav"       # исходный файл
 OUTPUT_FILE = "test_louder.wav"  # куда сохранить
 GAIN = 32.0   # коэффициент (1.0 = без изменений, 2.0 ≈ +6 dB, 4.0 ≈ +12 dB)
 
