@@ -19,15 +19,16 @@ import sounddevice as sd
 # ===== Параметры =====
 RATE = 16000
 CHANNELS = 1
-BLOCK_SEC = 0.10                          # 100 мс блок — компромисс между латентностью и стабильностью
+BLOCK_SEC = 0.10                          # 100 мс блок
 BLOCKSIZE = int(RATE * BLOCK_SEC)
-PRINT_HZ = 10                              # как часто обновлять шкалу (≈10 Гц)
+PRINT_HZ = 10                              # частота обновления шкалы
 BAR_LEN = 40                               # длина шкалы
 DBFS_FLOOR = -60                           # низ шкалы (дБFS)
 DBFS_CEIL  = 0                             # верх шкалы (дБFS)
 
-# очередь для передачи рассчитанных уровней из callback в главный поток
+# очередь для передачи уровней из callback в главный поток
 level_q: "queue.Queue[tuple]" = queue.Queue(maxsize=1)
+
 overflow_count = 0
 lock = threading.Lock()
 
@@ -56,13 +57,8 @@ def dbfs_and_peak(pcm16: np.ndarray):
     """Возвращает (rms_dbfs, peak_dbfs)."""
     if pcm16.size == 0:
         return float("-inf"), float("-inf")
-    # RMS
-    rms = math.sqrt(np.mean(pcm16.astype(np.float32) ** 2))
-    # Нормируем к full-scale int16
-    rms /= 32768.0
-    # Пик
+    rms = math.sqrt(np.mean(pcm16.astype(np.float32) ** 2)) / 32768.0
     peak = np.max(np.abs(pcm16)) / 32768.0
-    # dBFS
     eps = 1e-12
     rms_db = 20.0 * math.log10(max(rms, eps))
     peak_db = 20.0 * math.log10(max(peak, eps))
@@ -82,26 +78,25 @@ def make_bar(db: float, length: int = BAR_LEN, lo: float = DBFS_FLOOR, hi: float
 
 
 def audio_callback(indata_bytes, frames, t, status):
-    """RawInputStream: минимальная работа в callback — расчёт уровней и отправка в очередь."""
+    """RawInputStream: минимум работы — считаем уровни и отправляем в очередь."""
     global overflow_count
     if status:
         # засечём переполнения
         with lock:
             overflow_count += 1
 
-    # bytes -> int16 (копия — безопаснее, т.к. буфер живёт недолго)
+    # bytes -> int16
     pcm = np.frombuffer(indata_bytes, dtype=np.int16).copy()
 
-    # если вдруг пришло стерео, схлопнем в моно
+    # если внезапно стерео — схлопнем в моно
     if CHANNELS == 1 and pcm.size == frames * 2:
         pcm = ((pcm[0::2].astype(np.int32) + pcm[1::2].astype(np.int32)) // 2).astype(np.int16)
 
     rms_db, peak_db = dbfs_and_peak(pcm)
 
-    # положим в очередь последнюю метрику, не блокируясь
+    # держим только последнее значение
     try:
         while True:
-            # держим только последнее значение
             level_q.get_nowait()
     except queue.Empty:
         pass
@@ -112,6 +107,8 @@ def audio_callback(indata_bytes, frames, t, status):
 
 
 def main():
+    global overflow_count  # <-- ВАЖНО: объявляем глобальной, т.к. ниже делаем присваивание
+
     # (опционально) снизим приоритет вывода
     try:
         import os
@@ -137,13 +134,12 @@ def main():
             channels=CHANNELS,
             dtype="int16",
             blocksize=BLOCKSIZE,
-            latency="high",              # дайте бóльше буферов ALSA/PortAudio
+            latency="high",
             callback=audio_callback,
             device=device,
         ):
             while True:
                 now = time.time()
-                # обновляем не чаще PRINT_HZ
                 timeout = max(0.0, (1.0 / PRINT_HZ) - (now - last_print))
                 try:
                     rms_db, peak_db = level_q.get(timeout=timeout)
@@ -153,9 +149,8 @@ def main():
                 bar = make_bar(rms_db)
                 with lock:
                     ovf = overflow_count
-                    overflow_count = 0  # обнулим счётчик на период
+                    overflow_count = 0  # сбрасываем счётчик на период
 
-                # печать одной строкой с возвратом каретки
                 sys.stdout.write(
                     f"\r{bar}  RMS: {rms_db:6.1f} dBFS  Peak: {peak_db:6.1f} dBFS"
                     f"   overflows:{ovf:3d}"
