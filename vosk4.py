@@ -30,7 +30,7 @@ CHUNK_DURATION = 3.0       # 3 секунды окна
 OVERLAP        = 0.5
 
 # Очередь/вывод
-USE_QUEUE_LIMIT = True     # True = учитывать PROC_QUEUE_MAX (хранить только последний/последние);
+USE_QUEUE_LIMIT = False     # True = учитывать PROC_QUEUE_MAX (хранить только последний/последние);
                            # False = без ограничений (ничего не выбрасываем)
 PROC_QUEUE_MAX  = 2
 PRINT_COOLDOWN  = 0.6
@@ -183,8 +183,8 @@ class Int16Ring:
 # ===================== ПОТОКИ =====================
 def audio_callback(indata_bytes, frames, t, status):
     """RawInputStream: indata — bytes. Делаем минимум работы и печати."""
-    if status:
-        print(f"[audio] {status}", file=sys.stderr)
+    #if status:
+        #print(f"[audio] {status}", file=sys.stderr)
 
     mono = np.frombuffer(indata_bytes, dtype=np.int16).copy()
 
@@ -196,8 +196,8 @@ def audio_callback(indata_bytes, frames, t, status):
     audio_buffer.add(mono)
 
     _mic_cnt = (_mic_cnt + 1) % 50
-    if _mic_cnt == 0:
-        print(f"[mic] ok ({frames} frames)")
+    #if _mic_cnt == 0:
+        #print(f"[mic] ok ({frames} frames)")
 
 class LatestQueue:
     """
