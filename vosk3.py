@@ -29,7 +29,7 @@ CHUNK_DURATION = 3.0       # 3 секунды окна
 OVERLAP        = 0.5
 
 # Очередь/вывод
-PROC_QUEUE_MAX = 2
+PROC_QUEUE_MAX = 4
 PRINT_COOLDOWN = 0.6
 
 # Путь к модели Vosk (папка с model.conf внутри)
