@@ -17,7 +17,7 @@ import soundfile as sf
 
 # ----- настройки (через окружение можно переопределить) -----
 MODEL_PATH     = os.getenv("VOSK_MODEL_PATH", "../models/vosk-model-small-ru-0.22")
-WAV_PATH       = os.getenv("WAV_PATH", "test3n.wav")
+WAV_PATH       = os.getenv("WAV_PATH", "test4.wav")
 TARGET_RATE    = 16000
 PREAMP_GAIN    = float(os.getenv("PREAMP_GAIN", "1.0"))     # 1.0=без изменений; 2.0≈+6 dB
 HPF_HZ         = float(os.getenv("HPF_HZ", "0"))            # 0=выкл; 80..150 Гц обычно хорошо
