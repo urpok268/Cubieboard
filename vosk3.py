@@ -40,7 +40,7 @@ PROC_QUEUE_MAX = 2
 PRINT_COOLDOWN = 0.6
 
 # Путь к модели Vosk (папка с model.conf внутри)
-MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "models/vosk-model-small-ru-0.22")
+MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "../models/vosk-model-small-ru-0.22")
 
 # троттлинг печати из callback
 _mic_cnt = 0
