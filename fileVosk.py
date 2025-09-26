@@ -15,7 +15,7 @@ import soundfile as sf
 
 # ----- настройки -----
 MODEL_PATH   = os.getenv("VOSK_MODEL_PATH", "../models/vosk-model-small-ru-0.22")
-WAV_PATH     = os.getenv("WAV_PATH", "test3.wav")
+WAV_PATH     = os.getenv("WAV_PATH", "voice.wav")
 TARGET_RATE  = 16000
 PREAMP_GAIN  = float(os.getenv("PREAMP_GAIN", "1.0"))  # 1.0=без изменений; 2.0≈+6 dB
 CHUNK_SAMPLES = 8000  # ~0.5s при 16 кГц

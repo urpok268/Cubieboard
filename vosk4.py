@@ -21,7 +21,7 @@ DURATION_SEC = 5.0
 MODEL_PATH = "../models/vosk-model-small-ru-0.22"  # как вы просили
 
 # Коэффициент предусиления (линейный). 1.0 = без изменений, 2.0 ≈ +6 dB
-PREAMP_GAIN = float(os.getenv("PREAMP_GAIN", "1.0"))
+PREAMP_GAIN = float(os.getenv("PREAMP_GAIN", "2.0"))
 
 
 def list_devices():

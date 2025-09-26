@@ -9,9 +9,9 @@ import numpy as np
 import soundfile as sf
 
 # ===== Настройки =====
-INPUT_FILE  = "test2.wav"       # исходный файл
+INPUT_FILE  = "test3.wav"       # исходный файл
 OUTPUT_FILE = "test_louder.wav"  # куда сохранить
-GAIN = 2.0   # коэффициент (1.0 = без изменений, 2.0 ≈ +6 dB, 4.0 ≈ +12 dB)
+GAIN = 32.0   # коэффициент (1.0 = без изменений, 2.0 ≈ +6 dB, 4.0 ≈ +12 dB)
 
 
 def amplify_wav(input_path: str, output_path: str, gain: float):
