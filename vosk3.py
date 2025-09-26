@@ -4,7 +4,7 @@ Live ASR (Vosk) — Cubieboard2 raw-optimized:
 - RawInputStream (байты int16)
 - крупные буферы (0.20s)
 - минимум работ в callback
-- низкая "болтовня"
+- VAD и любое "шумоподавление" отключены
 """
 
 import os
@@ -31,9 +31,9 @@ OVERLAP        = 0.5      # небольшое перекрытие
 # Для ARM: крупнее буфер, чтобы не было overflow (0.20s = 3200 фреймов)
 BLOCKSIZE = int(RATE * 0.20)
 
-# Энерго-VAD
-VAD_ENERGY_THRESHOLD = 0.015
-VAD_MIN_SPEECH_RATIO = 0.22
+# Энерго-VAD (ОТКЛЮЧЕНО)
+VAD_ENERGY_THRESHOLD = 0.0
+VAD_MIN_SPEECH_RATIO = 0.0
 
 # Очередь/вывод
 PROC_QUEUE_MAX = 2
@@ -216,8 +216,9 @@ def monitor_buffer(audio_buffer: Int16Ring, processing_queue: "LatestQueue"):
     while True:
         audio_buffer.wait_for(chunk_samples)
         chunk = audio_buffer.pop_chunk(CHUNK_DURATION, OVERLAP)
-        if chunk is not None and is_speech_int16(chunk):
-            print(f"[proc] чанк ~{len(chunk)/RATE:.2f}s -> обработка")
+        # VAD отключен: отправляем каждый чанк как есть
+        if chunk is not None:
+            # print(f"[proc] чанк ~{len(chunk)/RATE:.2f}s -> обработка")
             processing_queue.put_latest((chunk, time.perf_counter()))
 
 # ===================== БЭКЕНД ASR: Vosk =====================
@@ -393,7 +394,7 @@ def main():
             while True:
                 time.sleep(0.1)
     except KeyboardInterrupt:
-        print("\нЗавершение записи...")
+        print("\nЗавершение записи...")
     except Exception as e:
         print(f"\nАудио-ошибка: {e}", file=sys.stderr)
 
