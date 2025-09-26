@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Запись первых 5 секунд и распознавание (Vosk).
-Минимум движущихся частей, чтобы избежать overflow.
+Добавлено ПОУРОВНЕВОЕ ПРЕДУСИЛЕНИЕ: переменная PREAMP_GAIN.
 """
 
 import os
@@ -19,6 +19,9 @@ DURATION_SEC = 5.0
 
 # Путь к модели Vosk (папка с model.conf внутри)
 MODEL_PATH = "../models/vosk-model-small-ru-0.22"  # как вы просили
+
+# Коэффициент предусиления (линейный). 1.0 = без изменений, 2.0 ≈ +6 dB
+PREAMP_GAIN = float(os.getenv("PREAMP_GAIN", "1.0"))
 
 
 def list_devices():
@@ -41,9 +44,25 @@ def choose_device():
         return None
 
 
+def apply_gain_int16(mono_int16: np.ndarray, gain: float) -> np.ndarray:
+    """
+    Сатурирующее (с насыщением) предусиление для int16.
+    Используем int32 как промежуточный формат, потом клип до диапазона int16.
+    """
+    if gain == 1.0:
+        return mono_int16  # быстрый путь
+    # переводим в int32, умножаем, клипуем, возвращаем в int16
+    x = mono_int16.astype(np.int32)
+    # округление к нулю достаточно; если хочешь — можно добавить np.rint
+    x = (x * gain).astype(np.int32)
+    np.clip(x, -32768, 32767, out=x)
+    return x.astype(np.int16)
+
+
 def record_5_seconds(device=None):
-    """Блокирующая запись 5 секунд в int16."""
+    """Блокирующая запись 5 секунд в int16 + предусиление PREAMP_GAIN."""
     print(f"\nЗапись {DURATION_SEC:.1f} сек @ {RATE} Гц, mono...")
+    print(f"Предусиление: PREAMP_GAIN = {PREAMP_GAIN:g}")
 
     # Проверим, что устройство примет наши параметры
     try:
@@ -54,16 +73,20 @@ def record_5_seconds(device=None):
 
     # Блокирующая запись: без callback и потоков
     try:
-        # sd.rec -> создаёт поток и пишет прямо в буфер; далее sd.wait() – блокирует до конца
         frames = int(RATE * DURATION_SEC)
         buf = sd.rec(frames, samplerate=RATE, channels=CHANNELS, dtype="int16", device=device)
         sd.wait()  # дождаться конца записи
-        # buf.shape == (frames, CHANNELS); сделаем 1D int16
+
+        # buf.shape == (frames, CHANNELS); приведём к 1D int16
         if buf.ndim == 2 and buf.shape[1] > 1:
-            # если вдруг стерео, схлопнем
+            # если вдруг стерео, берём среднее каналов (это не шумодав)
             mono = ((buf[:, 0].astype(np.int32) + buf[:, 1].astype(np.int32)) // 2).astype(np.int16)
         else:
             mono = buf[:, 0] if buf.ndim == 2 else buf.astype(np.int16)
+
+        # ПРИМЕНЯЕМ ПРЕДУСИЛЕНИЕ
+        mono = apply_gain_int16(mono, PREAMP_GAIN)
+
         print("Запись завершена.")
         return mono
     except Exception as e:
@@ -95,14 +118,12 @@ def recognize_vosk(pcm16_mono: np.ndarray):
 
     model = Model(MODEL_PATH)
     rec = KaldiRecognizer(model, RATE)
-    # Можно включить слова с таймкодами, но на ARM лучше экономить:
-    # try: rec.SetWords(True); except: pass
+    # try: rec.SetWords(True); except: pass  # можно включить слова
 
     print("Распознаю 5 секунд аудио...")
     t0 = time.perf_counter()
     raw = pcm16_mono.tobytes()
     try:
-        # Одним махом отдадим всю запись
         rec.AcceptWaveform(raw)
         out = rec.FinalResult()
     except Exception:
